@@ -1,0 +1,42 @@
+# 编译产物
+sqlkit
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试产物
+*.test
+*.out
+coverage.out
+coverage.html
+
+# 依赖目录
+vendor/
+
+# IDE 和编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 调试文件
+__debug_bin*
+debug
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+
+# 环境配置
+.env
+.env.local
+.env.*.local
+
+build/
+temp.up.sql
+bin/batch_convert_validate.sh
