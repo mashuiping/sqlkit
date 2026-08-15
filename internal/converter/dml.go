@@ -106,6 +106,8 @@ func (c *MySQLToPostgresConverter) generateInsert(stmt *InsertStatement) string 
 	// ON DUPLICATE KEY UPDATE -> ON CONFLICT DO UPDATE
 	if stmt.OnDuplicate != "" {
 		parts = append(parts, fmt.Sprintf("ON CONFLICT DO UPDATE SET %s", c.convertOnDuplicateUpdate(stmt.OnDuplicate)))
+	} else if stmt.Ignore {
+		parts = append(parts, "ON CONFLICT DO NOTHING")
 	}
 
 	result := strings.Join(parts, " ")
@@ -228,6 +230,9 @@ func (c *MySQLToPostgresConverter) generateUpdate(stmt *UpdateStatement) string 
 
 	// UPDATE table_name
 	updatePart := fmt.Sprintf("UPDATE \"%s\"", stmt.TableName)
+	if stmt.TableAlias != "" {
+		updatePart += fmt.Sprintf(" AS \"%s\"", stmt.TableAlias)
+	}
 	parts = append(parts, updatePart)
 
 	// SET 子句（移除表别名）
@@ -299,63 +304,20 @@ func (c *MySQLToPostgresConverter) parseSelect(stmt string) *SelectStatement {
 		Columns:       []string{},
 	}
 
-	upperStmt := strings.ToUpper(stmt)
-
-	// 检测 DISTINCT
-	selectStmt.Distinct = regexp.MustCompile(`(?i)\bSELECT\s+DISTINCT\b`).MatchString(upperStmt)
-
-	// 提取列列表
-	// 匹配: SELECT col1, col2, ... FROM (有 FROM 子句)
-	columnsRe := regexp.MustCompile(`(?i)SELECT\s+(?:DISTINCT\s+)?(.+?)\s+FROM`)
-	if matches := columnsRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		columnsStr := matches[1]
-		selectStmt.Columns = c.parseColumnList(columnsStr)
-	} else {
-		// 没有 FROM 子句的情况（如 SELECT 1;）
-		// 匹配: SELECT col1, col2, ... [WHERE/GROUP BY/HAVING/ORDER BY/LIMIT/;]
-		noFromRe := regexp.MustCompile(`(?i)SELECT\s+(?:DISTINCT\s+)?(.+?)(?:\s+WHERE|\s+GROUP\s+BY|\s+HAVING|\s+ORDER\s+BY|\s+LIMIT|;|$)`)
-		if matches := noFromRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-			columnsStr := matches[1]
-			selectStmt.Columns = c.parseColumnList(columnsStr)
-		}
+	body := strings.TrimSpace(stmt[len("SELECT"):])
+	if strings.HasPrefix(strings.ToUpper(body), "DISTINCT ") {
+		selectStmt.Distinct = true
+		body = strings.TrimSpace(body[len("DISTINCT"):])
 	}
 
-	// 提取 FROM 子句
-	fromRe := regexp.MustCompile(`(?i)\bFROM\s+(.+?)(?:\s+WHERE|\s+GROUP\s+BY|\s+HAVING|\s+ORDER\s+BY|\s+LIMIT|$)`)
-	if matches := fromRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		selectStmt.FromClause = matches[1]
-	}
-
-	// 提取 WHERE 子句
-	whereRe := regexp.MustCompile(`(?i)\bWHERE\s+(.+?)(?:\s+GROUP\s+BY|\s+HAVING|\s+ORDER\s+BY|\s+LIMIT|$)`)
-	if matches := whereRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		selectStmt.WhereClause = matches[1]
-	}
-
-	// 提取 GROUP BY 子句
-	groupRe := regexp.MustCompile(`(?i)\bGROUP\s+BY\s+(.+?)(?:\s+HAVING|\s+ORDER\s+BY|\s+LIMIT|$)`)
-	if matches := groupRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		selectStmt.GroupByClause = matches[1]
-	}
-
-	// 提取 HAVING 子句
-	havingRe := regexp.MustCompile(`(?i)\bHAVING\s+(.+?)(?:\s+ORDER\s+BY|\s+LIMIT|$)`)
-	if matches := havingRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		selectStmt.HavingClause = matches[1]
-	}
-
-	// 提取 ORDER BY 子句
-	orderRe := regexp.MustCompile(`(?i)\bORDER\s+BY\s+(.+?)(?:\s+LIMIT|$)`)
-	if matches := orderRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		selectStmt.OrderByClause = matches[1]
-	}
-
-	// 提取 LIMIT 子句（MySQL: LIMIT offset, count -> PostgreSQL: LIMIT count OFFSET offset）
-	limitRe := regexp.MustCompile(`(?i)\bLIMIT\s+(.+?)$`)
-	if matches := limitRe.FindStringSubmatch(stmt); len(matches) >= 2 {
-		limitStr := matches[1]
-		selectStmt.LimitClause, selectStmt.OffsetClause = c.parseLimitClause(limitStr)
-	}
+	clauses := splitTopLevelSelectClauses(body)
+	selectStmt.Columns = c.parseColumnList(clauses.columns)
+	selectStmt.FromClause = clauses.from
+	selectStmt.WhereClause = clauses.where
+	selectStmt.GroupByClause = clauses.groupBy
+	selectStmt.HavingClause = clauses.having
+	selectStmt.OrderByClause = clauses.orderBy
+	selectStmt.LimitClause, selectStmt.OffsetClause = c.parseLimitClause(clauses.limit)
 
 	return selectStmt
 }
@@ -769,6 +731,11 @@ func (c *MySQLToPostgresConverter) convertInsertValues(value string) string {
 
 // convertSelectFunctions 转换 SELECT 中的函数调用
 func (c *MySQLToPostgresConverter) convertSelectFunctions(expr string) string {
+	expr = c.convertGroupConcat(expr)
+	expr = regexp.MustCompile(`(?i)\bIFNULL\s*\(([^,]+),\s*([^)]+)\)`).ReplaceAllString(expr, "COALESCE($1, $2)")
+	expr = regexp.MustCompile(`(?i)\bFROM_UNIXTIME\s*\(([^)]+)\)`).ReplaceAllString(expr, "TO_TIMESTAMP($1)")
+	expr = regexp.MustCompile(`(?i)\bCONCAT\s*\(([^()]*)\)`).ReplaceAllStringFunc(expr, c.convertConcat)
+	expr = regexp.MustCompile(`(?i)\bDATE_FORMAT\s*\(([^,]+),\s*'([^']*)'\)`).ReplaceAllStringFunc(expr, convertDateFormat)
 	// 转换 CONVERT(... USING utf8mb4)
 	expr = regexp.MustCompile(`(?i)CONVERT\s*\(([^,]+)\s*USING\s+utf8mb4\)`).
 		ReplaceAllString(expr, "CAST($1 AS text)")
@@ -785,6 +752,37 @@ func (c *MySQLToPostgresConverter) convertSelectFunctions(expr string) string {
 	// 例如：'^[^/]*/' 在 PostgreSQL 中应写为 '^./' 或使用 SIMILAR TO
 	expr = regexp.MustCompile(`(~)\s*('[^']*\\[\\^\\][^']*')`).ReplaceAllString(expr, "$1 SIMILAR TO $2")
 	return expr
+}
+
+func (c *MySQLToPostgresConverter) convertGroupConcat(expr string) string {
+	groupConcatRe := regexp.MustCompile(`(?is)GROUP_CONCAT\s*\(\s*(DISTINCT\s+)?(.+?)\s+SEPARATOR\s+('(?:[^']|'')*')\s*\)`)
+	return groupConcatRe.ReplaceAllString(expr, "STRING_AGG($1$2, $3)")
+}
+
+func (c *MySQLToPostgresConverter) convertConcat(match string) string {
+	openParen := strings.IndexByte(match, '(')
+	arguments := strings.TrimSpace(match[openParen+1 : len(match)-1])
+	return "(" + strings.Join(c.parseColumnList(arguments), " || ") + ")"
+}
+
+func convertDateFormat(match string) string {
+	dateFormatRe := regexp.MustCompile(`(?is)DATE_FORMAT\s*\(([^,]+),\s*'([^']*)'\)`)
+	matches := dateFormatRe.FindStringSubmatch(match)
+	if len(matches) != 3 {
+		return match
+	}
+	format := matches[2]
+	format = strings.NewReplacer(
+		"%Y", "YYYY",
+		"%y", "YY",
+		"%m", "MM",
+		"%d", "DD",
+		"%H", "HH24",
+		"%h", "HH12",
+		"%i", "MI",
+		"%s", "SS",
+	).Replace(format)
+	return "TO_CHAR(CAST(" + strings.TrimSpace(matches[1]) + " AS TIMESTAMP), '" + format + "')"
 }
 
 // convertOnDuplicateUpdate 转换 ON DUPLICATE KEY UPDATE 子句
@@ -840,4 +838,3 @@ func (c *MySQLToPostgresConverter) removeTableAlias(column string) string {
 	}
 	return column
 }
-

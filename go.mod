@@ -6,6 +6,7 @@ require (
 	gitee.com/opengauss/openGauss-connector-go-pq v1.0.7
 	github.com/auxten/postgresql-parser v1.0.1
 	github.com/go-sql-driver/mysql v1.8.1
+	github.com/lib/pq v1.9.0
 	github.com/xwb1989/sqlparser v0.0.0-20180606152119-120387863bf2
 )
 
@@ -25,7 +26,6 @@ require (
 	github.com/konsorten/go-windows-terminal-sequences v1.0.3 // indirect
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/lib/pq v1.9.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.6.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect

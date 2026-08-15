@@ -3,7 +3,7 @@ package validator
 import (
 	"strings"
 
-	"github.com/auxten/postgresql-parser/pkg/sql/parser"
+	"github.com/mashuiping/sqlkit/internal/parser"
 )
 
 // GaussDBValidator GaussDB/PostgreSQL 语法验证器
@@ -27,8 +27,8 @@ func (v *GaussDBValidator) Validate(sql string) *ValidationResult {
 		return result
 	}
 
-	// 使用 postgresql-parser 解析 SQL
-	_, err := parser.Parse(trimmedSQL)
+	// 使用 PostgreSQL 解析器构建 AST。
+	_, err := parser.ParsePostgreSQL(trimmedSQL)
 	if err != nil {
 		result.AddError(0, 0, err.Error(), sql)
 	}

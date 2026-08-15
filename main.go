@@ -1,9 +1,9 @@
-// MySQL to GaussDB SQL Converter & Data Migrator
+// MySQL to PostgreSQL-Compatible SQL Converter & GaussDB/Teledb Tool
 // 功能：
-// 1. MySQL SQL 转换为 PostgreSQL/GaussDB SQL
+// 1. MySQL SQL 转换为 PostgreSQL 兼容 SQL（适用于 GaussDB、Teledb）
 // 2. 执行 GaussDB SQL 语句
 // 3. 执行 MySQL SQL 语句
-// 4. 静态语法验证（MySQL 和 GaussDB/PostgreSQL）
+// 4. 静态语法验证（MySQL 和 PostgreSQL-compatible SQL）
 // 5. MySQL 数据迁移到 GaussDB
 package main
 
@@ -32,13 +32,16 @@ var (
 	sqlQuery   = flag.String("sql", "", "直接指定要处理的 SQL 语句")
 
 	// 操作模式
-	modeConvert            = flag.Bool("convert", false, "转换 MySQL SQL 为 PostgreSQL SQL（默认模式）")
-	modeExecMySQL          = flag.Bool("exec-mysql", false, "在 MySQL 数据库执行 SQL")
-	modeExecGaussDB        = flag.Bool("exec-gaussdb", false, "在 GaussDB 数据库执行 SQL")
-	modeValidMySQL         = flag.Bool("validate-mysql", false, "验证 MySQL SQL 语法（静态检查，无需数据库连接）")
-	modeValidGaussDB       = flag.Bool("validate-gaussdb", false, "验证 GaussDB/PostgreSQL SQL 语法（静态检查）")
-	modeValidGaussDBOnline = flag.Bool("validate-gaussdb-online", false, "在线验证 GaussDB SQL（使用数据库事务，需要数据库连接）")
-	modeMigrateData        = flag.Bool("migrate-data", false, "将 MySQL 数据迁移到 GaussDB")
+	modeConvert             = flag.Bool("convert", false, "转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB）")
+	modeExecMySQL           = flag.Bool("exec-mysql", false, "在 MySQL 数据库执行 SQL")
+	modeExecGaussDB         = flag.Bool("exec-gaussdb", false, "在 GaussDB 数据库执行 SQL")
+	modeValidMySQL          = flag.Bool("validate-mysql", false, "验证 MySQL SQL 语法（静态检查，无需数据库连接）")
+	modeValidPostgres       = flag.Bool("validate-postgres", false, "验证 PostgreSQL 兼容 SQL 语法（静态检查）")
+	modeValidGaussDB        = flag.Bool("validate-gaussdb", false, "验证 PostgreSQL 兼容 SQL 语法（旧别名）")
+	modeValidPostgresOnline = flag.Bool("validate-postgres-online", false, "在线验证 PostgreSQL SQL（使用数据库事务，需要 PostgreSQL 连接）")
+	modeValidGaussDBOnline  = flag.Bool("validate-gaussdb-online", false, "在线验证 GaussDB SQL（使用数据库事务，需要数据库连接）")
+	modeValidTeledbOnline   = flag.Bool("validate-teledb-online", false, "在线验证 Teledb SQL（使用 opengauss 驱动，需要 Teledb 连接）")
+	modeMigrateData         = flag.Bool("migrate-data", false, "将 MySQL 数据迁移到 GaussDB")
 
 	// 数据迁移配置
 	migrateTable     = flag.String("table", "", "要迁移的表名（多个表用逗号分隔）")
@@ -69,6 +72,24 @@ var (
 	gaussdbPassword = flag.String("gaussdb-password", "", "GaussDB 密码（或设置 GAUSSDB_PASSWORD 环境变量）")
 	gaussdbDBName   = flag.String("gaussdb-dbname", "", "GaussDB 数据库名（或设置 GAUSSDB_DBNAME 环境变量）")
 	gaussdbSSLMode  = flag.String("gaussdb-sslmode", "disable", "GaussDB SSL 模式（或设置 GAUSSDB_SSLMODE 环境变量）")
+
+	// PostgreSQL 数据库配置（仅用于在线验证）
+	postgresDSN      = flag.String("postgres-dsn", "", "PostgreSQL DSN 连接字符串（或设置 POSTGRES_DSN 环境变量）")
+	postgresHost     = flag.String("postgres-host", "", "PostgreSQL 主机地址（或设置 POSTGRES_HOST 环境变量）")
+	postgresPort     = flag.Int("postgres-port", 0, "PostgreSQL 端口（或设置 POSTGRES_PORT 环境变量）")
+	postgresUser     = flag.String("postgres-user", "", "PostgreSQL 用户名（或设置 POSTGRES_USER 环境变量）")
+	postgresPassword = flag.String("postgres-password", "", "PostgreSQL 密码（或设置 POSTGRES_PASSWORD 环境变量）")
+	postgresDBName   = flag.String("postgres-dbname", "", "PostgreSQL 数据库名（或设置 POSTGRES_DBNAME 环境变量）")
+	postgresSSLMode  = flag.String("postgres-sslmode", "disable", "PostgreSQL SSL 模式（或设置 POSTGRES_SSLMODE 环境变量）")
+
+	// Teledb 数据库配置（仅用于在线验证）
+	teledbDSN      = flag.String("teledb-dsn", "", "Teledb DSN 连接字符串（或设置 TELEDB_DSN 环境变量）")
+	teledbHost     = flag.String("teledb-host", "", "Teledb 主机地址（或设置 TELEDB_HOST 环境变量）")
+	teledbPort     = flag.Int("teledb-port", 0, "Teledb 端口（或设置 TELEDB_PORT 环境变量）")
+	teledbUser     = flag.String("teledb-user", "", "Teledb 用户名（或设置 TELEDB_USER 环境变量）")
+	teledbPassword = flag.String("teledb-password", "", "Teledb 密码（或设置 TELEDB_PASSWORD 环境变量）")
+	teledbDBName   = flag.String("teledb-dbname", "", "Teledb 数据库名（或设置 TELEDB_DBNAME 环境变量）")
+	teledbSSLMode  = flag.String("teledb-sslmode", "disable", "Teledb SSL 模式（或设置 TELEDB_SSLMODE 环境变量）")
 )
 
 func main() {
@@ -100,13 +121,20 @@ func main() {
 			os.Exit(1)
 		}
 		validateMySQL(sqlContent)
-	case *modeValidGaussDB:
+	case *modeValidPostgres, *modeValidGaussDB:
 		sqlContent, err := getSQLContent()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
 			os.Exit(1)
 		}
 		validateGaussDB(sqlContent)
+	case *modeValidPostgresOnline:
+		sqlContent, err := getSQLContent()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+		validatePostgresOnline(sqlContent)
 	case *modeValidGaussDBOnline:
 		sqlContent, err := getSQLContent()
 		if err != nil {
@@ -114,6 +142,13 @@ func main() {
 			os.Exit(1)
 		}
 		validateGaussDBOnline(sqlContent)
+	case *modeValidTeledbOnline:
+		sqlContent, err := getSQLContent()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+		validateTeledbOnline(sqlContent)
 	default:
 		// 默认转换模式
 		sqlContent, err := getSQLContent()
@@ -187,7 +222,7 @@ func convertSQL(mysqlSQL string) {
 			fmt.Println()
 		}
 
-		fmt.Println("GaussDB SQL:")
+		fmt.Println("PostgreSQL-compatible SQL (适用于 GaussDB):")
 		fmt.Println(strings.Repeat("=", 60))
 		fmt.Println(postgresSQL)
 		fmt.Println(strings.Repeat("=", 60))
@@ -332,7 +367,8 @@ func validateMySQL(sql string) {
 	}
 }
 
-// validateGaussDB 验证 GaussDB 语法
+// validateGaussDB 验证 PostgreSQL 兼容 SQL 语法。
+// -validate-gaussdb 是历史命令名；-validate-postgres 为推荐名称。
 func validateGaussDB(sql string) {
 	v := validator.NewGaussDBValidator()
 	result := v.ValidateText(sql)
@@ -366,6 +402,56 @@ func validateGaussDBOnline(sql string) {
 	result := v.ValidateText(sql)
 	validator.PrintResult(result, "")
 
+	if !result.Valid {
+		os.Exit(1)
+	}
+}
+
+// validatePostgresOnline 在线验证 PostgreSQL SQL。
+func validatePostgresOnline(sql string) {
+	dsn := getPostgresDSN()
+	if dsn == "" {
+		fmt.Fprintf(os.Stderr, "错误: 请提供 PostgreSQL 连接信息\n")
+		fmt.Fprintf(os.Stderr, "使用 -postgres-dsn 或 -postgres-host/-postgres-user 等参数\n")
+		fmt.Fprintf(os.Stderr, "或设置环境变量: POSTGRES_DSN, POSTGRES_HOST, POSTGRES_USER 等\n")
+		os.Exit(1)
+	}
+
+	v := validator.NewPostgreSQLOnlineValidator(dsn)
+	if err := v.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 连接 PostgreSQL 失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer v.Close()
+
+	fmt.Println("✓ 成功连接到 PostgreSQL（在线验证模式）")
+	result := v.ValidateText(sql)
+	validator.PrintResult(result, "")
+	if !result.Valid {
+		os.Exit(1)
+	}
+}
+
+// validateTeledbOnline 在线验证 Teledb SQL。
+func validateTeledbOnline(sql string) {
+	dsn := getTeledbDSN()
+	if dsn == "" {
+		fmt.Fprintf(os.Stderr, "错误: 请提供 Teledb 连接信息\n")
+		fmt.Fprintf(os.Stderr, "使用 -teledb-dsn 或 -teledb-host/-teledb-user 等参数\n")
+		fmt.Fprintf(os.Stderr, "或设置环境变量: TELEDB_DSN, TELEDB_HOST, TELEDB_USER 等\n")
+		os.Exit(1)
+	}
+
+	v := validator.NewTeledbOnlineValidator(dsn)
+	if err := v.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 连接 Teledb 失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer v.Close()
+
+	fmt.Println("✓ 成功连接到 Teledb（在线验证模式，opengauss 驱动）")
+	result := v.ValidateText(sql)
+	validator.PrintResult(result, "")
 	if !result.Valid {
 		os.Exit(1)
 	}
@@ -786,6 +872,78 @@ func getGaussDBDSN() string {
 	return cfg.GaussDBDSN()
 }
 
+// getPostgresDSN 获取 PostgreSQL DSN。
+func getPostgresDSN() string {
+	if *postgresDSN != "" {
+		return *postgresDSN
+	}
+	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
+		return dsn
+	}
+
+	cfg := config.NewPostgresConfig()
+	cfg.LoadFromEnv("POSTGRES")
+	if *postgresHost != "" {
+		cfg.Host = *postgresHost
+	}
+	if *postgresPort > 0 {
+		cfg.Port = *postgresPort
+	}
+	if *postgresUser != "" {
+		cfg.User = *postgresUser
+	}
+	if *postgresPassword != "" {
+		cfg.Password = *postgresPassword
+	}
+	if *postgresDBName != "" {
+		cfg.DBName = *postgresDBName
+	}
+	if *postgresSSLMode != "" {
+		cfg.SSLMode = *postgresSSLMode
+	}
+	if cfg.User == "" || cfg.DBName == "" {
+		return ""
+	}
+
+	return cfg.PostgresDSN()
+}
+
+// getTeledbDSN 获取 Teledb DSN。
+func getTeledbDSN() string {
+	if *teledbDSN != "" {
+		return *teledbDSN
+	}
+	if dsn := os.Getenv("TELEDB_DSN"); dsn != "" {
+		return dsn
+	}
+
+	cfg := config.NewTeledbConfig()
+	cfg.LoadFromEnv("TELEDB")
+	if *teledbHost != "" {
+		cfg.Host = *teledbHost
+	}
+	if *teledbPort > 0 {
+		cfg.Port = *teledbPort
+	}
+	if *teledbUser != "" {
+		cfg.User = *teledbUser
+	}
+	if *teledbPassword != "" {
+		cfg.Password = *teledbPassword
+	}
+	if *teledbDBName != "" {
+		cfg.DBName = *teledbDBName
+	}
+	if *teledbSSLMode != "" {
+		cfg.SSLMode = *teledbSSLMode
+	}
+	if cfg.User == "" || cfg.DBName == "" {
+		return ""
+	}
+
+	return cfg.TeledbDSN()
+}
+
 // printExecuteResult 打印执行结果
 func printExecuteResult(result *executor.ExecuteResult) {
 	fmt.Printf("执行耗时: %v\n", result.Duration)
@@ -799,18 +957,21 @@ func printExecuteResult(result *executor.ExecuteResult) {
 
 // printUsage 打印使用说明
 func printUsage() {
-	fmt.Print(`sqlkit - MySQL to GaussDB SQL Converter & Data Migrator
+	fmt.Print(`sqlkit - MySQL to PostgreSQL-Compatible SQL Converter & GaussDB/Teledb Tool
 
 用法:
   sqlkit [操作模式] [选项]
 
 操作模式:
-  -convert                 转换 MySQL SQL 为 GaussDB SQL（默认模式）
+  -convert                 转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB）
   -exec-mysql              在 MySQL 数据库执行 SQL
   -exec-gaussdb            在 GaussDB 数据库执行 SQL  
   -validate-mysql          验证 MySQL SQL 语法（静态检查，无需数据库连接）
-  -validate-gaussdb        验证 GaussDB/PostgreSQL SQL 语法（静态检查）
+  -validate-postgres       验证 PostgreSQL 兼容 SQL 语法（静态检查，推荐）
+  -validate-gaussdb        验证 PostgreSQL 兼容 SQL 语法（旧别名）
+  -validate-postgres-online 在线验证 PostgreSQL SQL（使用 PostgreSQL 连接）
   -validate-gaussdb-online 在线验证 GaussDB SQL（使用数据库事务，需要数据库连接）
+  -validate-teledb-online   在线验证 Teledb SQL（使用 opengauss 驱动，需要 Teledb 连接）
   -migrate-data            将 MySQL 数据迁移到 GaussDB
 
 输入/输出选项:
@@ -863,6 +1024,41 @@ GaussDB 数据库连接:
     GAUSSDB_DSN, GAUSSDB_HOST, GAUSSDB_PORT, GAUSSDB_USER, GAUSSDB_PASSWORD, 
     GAUSSDB_DBNAME, GAUSSDB_SSLMODE
 
+PostgreSQL 数据库连接（仅用于 -validate-postgres-online）:
+  方式一: 使用 DSN（推荐，指定后无需其他连接参数）
+    -postgres-dsn <dsn> 完整的 DSN 连接字符串
+                       格式: host=xxx port=xxx user=xxx password=xxx dbname=xxx sslmode=xxx
+
+  方式二: 分别指定连接参数
+    -postgres-host      主机地址（默认: localhost）
+    -postgres-port      端口（默认: 5432）
+    -postgres-user      用户名
+    -postgres-password  密码
+    -postgres-dbname    数据库名
+    -postgres-sslmode   SSL 模式（默认: disable）
+
+  环境变量（优先级低于命令行参数）:
+    POSTGRES_DSN, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD,
+    POSTGRES_DBNAME, POSTGRES_SSLMODE
+
+Teledb 数据库连接（仅用于 -validate-teledb-online）:
+  Teledb 使用 opengauss 驱动，配置与 GaussDB 独立。
+  方式一: 使用 DSN（推荐，指定后无需其他连接参数）
+    -teledb-dsn <dsn>    完整的 DSN 连接字符串
+                         格式: host=xxx port=xxx user=xxx password=xxx dbname=xxx sslmode=xxx
+
+  方式二: 分别指定连接参数
+    -teledb-host         主机地址（默认: localhost）
+    -teledb-port         端口（默认: 5432）
+    -teledb-user         用户名
+    -teledb-password     密码
+    -teledb-dbname       数据库名
+    -teledb-sslmode      SSL 模式（默认: disable）
+
+  环境变量（优先级低于命令行参数）:
+    TELEDB_DSN, TELEDB_HOST, TELEDB_PORT, TELEDB_USER, TELEDB_PASSWORD,
+    TELEDB_DBNAME, TELEDB_SSLMODE
+
 示例:
   # 转换 SQL 文件
   sqlkit -f input.sql -o output.sql
@@ -876,12 +1072,22 @@ GaussDB 数据库连接:
   # 验证 MySQL 语法
   sqlkit -validate-mysql -f input.sql
 
-  # 验证 GaussDB 语法  
-  sqlkit -validate-gaussdb -f converted.sql
+  # 验证 PostgreSQL 兼容 SQL 语法（适用于 GaussDB）
+  sqlkit -validate-postgres -f converted.sql
 
   # 在线验证 GaussDB SQL（使用数据库事务）
   sqlkit -validate-gaussdb-online \
          -gaussdb-dsn "host=localhost port=5432 user=admin password=xxx dbname=mydb" \
+         -f converted.sql
+
+  # 在线验证 PostgreSQL SQL（使用 PostgreSQL 连接）
+  sqlkit -validate-postgres-online \
+         -postgres-dsn "host=localhost port=5432 user=postgres password=xxx dbname=mydb sslmode=disable" \
+         -f converted.sql
+
+  # 在线验证 Teledb SQL（使用 opengauss 驱动）
+  sqlkit -validate-teledb-online \
+         -teledb-dsn "host=localhost port=5432 user=teledb password=xxx dbname=mydb sslmode=disable" \
          -f converted.sql
 
   # 使用 DSN 执行 GaussDB SQL

@@ -139,7 +139,8 @@ func (c *MySQLToPostgresConverter) parseColumnDefinitions(stmt string, comments 
 			strings.HasPrefix(upperColDef, "CONSTRAINT ") ||
 			strings.HasPrefix(upperColDef, "FULLTEXT ") ||
 			strings.HasPrefix(upperColDef, "SPATIAL ") ||
-			strings.HasPrefix(upperColDef, "FOREIGN KEY") {
+			strings.HasPrefix(upperColDef, "FOREIGN KEY") ||
+			strings.HasPrefix(upperColDef, "CHECK ") {
 			continue
 		}
 
@@ -190,8 +191,17 @@ func (c *MySQLToPostgresConverter) parseSingleColumn(line string, comments Comme
 
 	// 提取位置（AFTER/FIRST）
 	col.Position = c.extractColumnPosition(line, upperLine)
+	col.Check = c.extractColumnCheck(line)
 
 	return col
+}
+
+func (c *MySQLToPostgresConverter) extractColumnCheck(line string) string {
+	checkRe := regexp.MustCompile(`(?i)\bCHECK\s*\((.+)\)`)
+	if matches := checkRe.FindStringSubmatch(line); len(matches) >= 2 {
+		return strings.TrimSpace(matches[1])
+	}
+	return ""
 }
 
 // extractColumnName 提取列名（支持反引号、双引号或普通标识符）
@@ -346,6 +356,7 @@ func (c *MySQLToPostgresConverter) parseDataType(line string) *DataType {
 		{`(?i)\bTINYBLOB\b`, "BYTEA"},
 		// JSON 类型（占位符，将在下面特殊处理）
 		{`(?i)\bJSON\b`, ""},
+		{`(?i)\bENUM\s*\(([^)]*)\)`, "TEXT"},
 	}
 
 	for _, tp := range typePatterns {
@@ -380,6 +391,18 @@ func (c *MySQLToPostgresConverter) parseDataType(line string) *DataType {
 	// 检查 UNSIGNED
 	if strings.Contains(strings.ToUpper(line), "UNSIGNED") {
 		dt.Unsigned = true
+		switch dt.Type {
+		case "SMALLINT":
+			dt.Type = "INTEGER"
+		case "INTEGER":
+			dt.Type = "BIGINT"
+		case "BIGINT":
+			dt.Type = "NUMERIC"
+			dt.Precision = 20
+		}
+	}
+	if enumRe := regexp.MustCompile(`(?i)\bENUM\s*\(([^)]*)\)`).FindStringSubmatch(line); len(enumRe) >= 2 {
+		dt.EnumValues = enumRe[1]
 	}
 
 	return dt
@@ -414,6 +437,38 @@ func (c *MySQLToPostgresConverter) parseTableConstraints(stmt string, indexes []
 		constraints = append(constraints, &TableConstraint{
 			Type:    ConstraintPrimaryKey,
 			Columns: columns,
+		})
+	}
+
+	foreignKeyRe := regexp.MustCompile(`(?is)(?:CONSTRAINT\s+[` + "`" + `"]?([^` + "`" + `"\s]+)[` + "`" + `"]?\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+([^\s(]+)\s*\(([^)]+)\)(\s+ON\s+DELETE\s+(?:CASCADE|RESTRICT|SET\s+NULL|NO\s+ACTION))?`)
+	for _, matches := range foreignKeyRe.FindAllStringSubmatch(stmt, -1) {
+		if len(matches) < 5 {
+			continue
+		}
+		name := strings.Trim(matches[1], "`\"")
+		columns := c.cleanColumnList(matches[2])
+		referenceTable := strings.Trim(matches[3], "`\"")
+		referenceColumns := c.cleanColumnList(matches[4])
+		definition := fmt.Sprintf("FOREIGN KEY (%s) REFERENCES \"%s\" (%s)", columns, referenceTable, referenceColumns)
+		if len(matches) >= 6 {
+			definition += strings.ToUpper(matches[5])
+		}
+		constraints = append(constraints, &TableConstraint{
+			Type:       ConstraintForeignKey,
+			Name:       name,
+			Definition: definition,
+		})
+	}
+
+	checkRe := regexp.MustCompile(`(?is)(?:CONSTRAINT\s+[` + "`" + `"]?([^` + "`" + `"\s]+)[` + "`" + `"]?\s+)?CHECK\s*\(([^)]+)\)`)
+	for _, matches := range checkRe.FindAllStringSubmatch(stmt, -1) {
+		if len(matches) < 3 {
+			continue
+		}
+		constraints = append(constraints, &TableConstraint{
+			Type:       ConstraintCheck,
+			Name:       strings.Trim(matches[1], "`\""),
+			Definition: "CHECK (" + strings.TrimSpace(matches[2]) + ")",
 		})
 	}
 
@@ -472,6 +527,13 @@ func (c *MySQLToPostgresConverter) generateCreateTable(stmt *CreateTableStatemen
 		if constraint.Type == ConstraintPrimaryKey {
 			cols := strings.Join(constraint.Columns, ", ")
 			colDefs = append(colDefs, fmt.Sprintf("    PRIMARY KEY (%s)", cols))
+		}
+		if constraint.Type == ConstraintForeignKey || constraint.Type == ConstraintCheck {
+			definition := constraint.Definition
+			if constraint.Name != "" {
+				definition = fmt.Sprintf("CONSTRAINT \"%s\" %s", constraint.Name, definition)
+			}
+			colDefs = append(colDefs, "    "+definition)
 		}
 	}
 
@@ -554,6 +616,12 @@ func (c *MySQLToPostgresConverter) generateColumnDef(col *ColumnDef) string {
 	if col.Default != "" && !col.AutoIncrement {
 		parts = append(parts, fmt.Sprintf("DEFAULT %s", col.Default))
 	}
+	if col.DataType != nil && col.DataType.EnumValues != "" {
+		parts = append(parts, fmt.Sprintf("CHECK (\"%s\" IN (%s))", col.Name, col.DataType.EnumValues))
+	}
+	if col.Check != "" {
+		parts = append(parts, "CHECK ("+c.basicConvert(col.Check)+")")
+	}
 
 	return strings.Join(parts, " ")
 }
@@ -579,4 +647,3 @@ func (c *MySQLToPostgresConverter) generateDataType(dt *DataType) string {
 
 	return result
 }
-

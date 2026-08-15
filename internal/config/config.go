@@ -11,8 +11,10 @@ import (
 type DatabaseType string
 
 const (
-	DatabaseTypeMySQL   DatabaseType = "mysql"
-	DatabaseTypeGaussDB DatabaseType = "gaussdb"
+	DatabaseTypeMySQL    DatabaseType = "mysql"
+	DatabaseTypeGaussDB  DatabaseType = "gaussdb"
+	DatabaseTypePostgres DatabaseType = "postgres"
+	DatabaseTypeTeledb   DatabaseType = "teledb"
 )
 
 // DatabaseConfig 数据库连接配置
@@ -42,10 +44,14 @@ type Config struct {
 	ExecuteGaussDB bool
 	MySQLConfig    *DatabaseConfig
 	GaussDBConfig  *DatabaseConfig
+	PostgresConfig *DatabaseConfig
+	TeledbConfig   *DatabaseConfig
 
 	// 语法验证配置
-	ValidateMySQL   bool
-	ValidateGaussDB bool
+	ValidateMySQL    bool
+	ValidateGaussDB  bool
+	ValidatePostgres bool
+	ValidateTeledb   bool
 }
 
 // NewConfig 创建默认配置
@@ -55,6 +61,8 @@ func NewConfig() *Config {
 		UseJSONB:       true,
 		MySQLConfig:    NewMySQLConfig(),
 		GaussDBConfig:  NewGaussDBConfig(),
+		PostgresConfig: NewPostgresConfig(),
+		TeledbConfig:   NewTeledbConfig(),
 	}
 }
 
@@ -84,6 +92,10 @@ func (c *DatabaseConfig) DSN(dbType DatabaseType) string {
 		return c.MySQLDSN()
 	case DatabaseTypeGaussDB:
 		return c.GaussDBDSN()
+	case DatabaseTypePostgres:
+		return c.PostgresDSN()
+	case DatabaseTypeTeledb:
+		return c.TeledbDSN()
 	default:
 		return ""
 	}
@@ -101,6 +113,51 @@ func (c *DatabaseConfig) GaussDBDSN() string {
 	// 格式: host=xxx port=xxx user=xxx password=xxx dbname=xxx sslmode=xxx
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode)
+}
+
+// PostgresDSN 返回 PostgreSQL 连接字符串。
+func (c *DatabaseConfig) PostgresDSN() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode)
+}
+
+// NewPostgresConfig 创建默认 PostgreSQL 配置。
+func NewPostgresConfig() *DatabaseConfig {
+	return &DatabaseConfig{
+		Host:    "localhost",
+		Port:    5432,
+		SSLMode: "disable",
+	}
+}
+
+// LoadPostgresConfigFromEnv 加载 PostgreSQL 配置。
+func LoadPostgresConfigFromEnv() *DatabaseConfig {
+	cfg := NewPostgresConfig()
+	cfg.LoadFromEnv("POSTGRES")
+	return cfg
+}
+
+// TeledbDSN 返回 Teledb 连接字符串。
+// Teledb 使用与 GaussDB 相同的 opengauss 驱动协议。
+func (c *DatabaseConfig) TeledbDSN() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		c.Host, c.Port, c.User, c.Password, c.DBName, c.SSLMode)
+}
+
+// NewTeledbConfig 创建默认 Teledb 配置。
+func NewTeledbConfig() *DatabaseConfig {
+	return &DatabaseConfig{
+		Host:    "localhost",
+		Port:    5432,
+		SSLMode: "disable",
+	}
+}
+
+// LoadTeledbConfigFromEnv 加载 Teledb 配置。
+func LoadTeledbConfigFromEnv() *DatabaseConfig {
+	cfg := NewTeledbConfig()
+	cfg.LoadFromEnv("TELEDB")
+	return cfg
 }
 
 // LoadFromEnv 从环境变量加载配置

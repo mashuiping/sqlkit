@@ -46,22 +46,25 @@ type ColumnDef struct {
 	AutoIncrement bool
 	Comment       string
 	Position      string // AFTER column_name 或 FIRST
+	Check         string // 列级 CHECK 表达式
 }
 
 // DataType 数据类型（参考 sqlglot.expressions.DataType）
 type DataType struct {
-	Type      string // INTEGER, VARCHAR, DATETIME 等
-	Precision int    // 精度（如 VARCHAR(255) 的 255）
-	Scale     int    // 小数位数（如 DECIMAL(10,2) 的 2）
-	Unsigned  bool   // UNSIGNED 修饰符
+	Type       string // INTEGER, VARCHAR, DATETIME 等
+	Precision  int    // 精度（如 VARCHAR(255) 的 255）
+	Scale      int    // 小数位数（如 DECIMAL(10,2) 的 2）
+	Unsigned   bool   // UNSIGNED 修饰符
+	EnumValues string // ENUM 值列表（不含括号）
 }
 
 // TableConstraint 表级约束（PRIMARY KEY, UNIQUE KEY, INDEX 等）
 type TableConstraint struct {
-	Type     ConstraintType // PRIMARY_KEY, UNIQUE_KEY, INDEX, FOREIGN_KEY
-	Name     string
-	Columns  []string
-	IsUnique bool // 用于 UNIQUE KEY/INDEX
+	Type       ConstraintType // PRIMARY_KEY, UNIQUE_KEY, INDEX, FOREIGN_KEY
+	Name       string
+	Columns    []string
+	IsUnique   bool // 用于 UNIQUE KEY/INDEX
+	Definition string
 }
 
 // ConstraintType 约束类型
@@ -72,6 +75,7 @@ const (
 	ConstraintUniqueKey
 	ConstraintIndex
 	ConstraintForeignKey
+	ConstraintCheck
 )
 
 // TableOptions 表选项（ENGINE, CHARSET, COMMENT 等）

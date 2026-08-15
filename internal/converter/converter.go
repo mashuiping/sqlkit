@@ -4,8 +4,11 @@
 package converter
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/mashuiping/sqlkit/internal/parser"
 )
 
 // MySQLToPostgresConverter 提供 MySQL SQL 到 PostgreSQL SQL 的转换功能
@@ -41,8 +44,14 @@ func (c *MySQLToPostgresConverter) ConvertSQL(mysqlSQL string) (string, error) {
 			continue
 		}
 
-		converted := c.convertStatement(stmt)
+		converted, err := c.convertStatement(stmt)
+		if err != nil {
+			return "", err
+		}
 		if converted != "" {
+			if _, err := parser.ParsePostgreSQL(converted); err != nil {
+				return "", fmt.Errorf("converted PostgreSQL is invalid for %q: %w", stmt, err)
+			}
 			results = append(results, converted)
 		}
 	}
@@ -51,7 +60,16 @@ func (c *MySQLToPostgresConverter) ConvertSQL(mysqlSQL string) (string, error) {
 }
 
 // convertStatement 转换单条 SQL 语句
-func (c *MySQLToPostgresConverter) convertStatement(stmt string) string {
+func (c *MySQLToPostgresConverter) convertStatement(stmt string) (string, error) {
+	if isMultiTableDelete(stmt) {
+		return "", fmt.Errorf("multi-table DELETE is not supported: %q", stmt)
+	}
+	if hasOnDuplicateKeyUpdate(stmt) {
+		return "", fmt.Errorf("ON DUPLICATE KEY UPDATE requires a PostgreSQL conflict target and is not supported: %q", stmt)
+	}
+	if hasOrderedGroupConcat(stmt) {
+		return "", fmt.Errorf("GROUP_CONCAT with ORDER BY is not supported because the configured PostgreSQL parser cannot validate it: %q", stmt)
+	}
 	// 1. 提取和保留前缀注释行
 	lines := strings.Split(stmt, "\n")
 	var commentLines []string
@@ -76,9 +94,21 @@ func (c *MySQLToPostgresConverter) convertStatement(stmt string) string {
 
 	// 4. 合并注释和转换后的 SQL
 	if len(commentLines) > 0 {
-		return strings.Join(commentLines, "\n") + "\n" + converted
+		return strings.Join(commentLines, "\n") + "\n" + converted, nil
 	}
-	return converted
+	return converted, nil
+}
+
+func hasOnDuplicateKeyUpdate(stmt string) bool {
+	return regexp.MustCompile(`(?i)\bON\s+DUPLICATE\s+KEY\s+UPDATE\b`).MatchString(stmt)
+}
+
+func isMultiTableDelete(stmt string) bool {
+	return regexp.MustCompile(`(?i)^\s*DELETE\s+(?:` + "`?" + `\w+` + "`?" + `\s*,\s*)*` + "`?" + `\w+` + "`?" + `\s+FROM\b`).MatchString(stmt)
+}
+
+func hasOrderedGroupConcat(stmt string) bool {
+	return regexp.MustCompile(`(?is)\bGROUP_CONCAT\s*\([^)]*\bORDER\s+BY\b`).MatchString(stmt)
 }
 
 // parseStatement 将单条 SQL 文本解析为对应的 Statement 节点（AST）

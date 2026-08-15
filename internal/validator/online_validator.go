@@ -8,6 +8,7 @@ import (
 	"time"
 
 	_ "gitee.com/opengauss/openGauss-connector-go-pq"
+	_ "github.com/lib/pq"
 )
 
 // OnlineValidator 在线验证器接口
@@ -196,6 +197,95 @@ type GaussDBOnlineValidator struct {
 	OnlineValidatorBase
 }
 
+// PostgreSQLOnlineValidator PostgreSQL 在线验证器。
+type PostgreSQLOnlineValidator struct {
+	OnlineValidatorBase
+}
+
+// TeledbOnlineValidator Teledb 在线验证器。
+// Teledb 使用与 GaussDB 相同的 opengauss 驱动，但保留独立类型和错误上下文。
+type TeledbOnlineValidator struct {
+	OnlineValidatorBase
+}
+
+// NewTeledbOnlineValidator 创建 Teledb 在线验证器。
+func NewTeledbOnlineValidator(dsn string) *TeledbOnlineValidator {
+	return &TeledbOnlineValidator{
+		OnlineValidatorBase: OnlineValidatorBase{
+			DSN: dsn,
+		},
+	}
+}
+
+// Connect 连接到 Teledb 数据库。
+func (v *TeledbOnlineValidator) Connect() error {
+	db, err := sql.Open("opengauss", v.DSN)
+	if err != nil {
+		return fmt.Errorf("打开 Teledb 连接失败: %w", err)
+	}
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return fmt.Errorf("Teledb 连接测试失败: %w", err)
+	}
+
+	v.DB = db
+	return nil
+}
+
+// Validate 验证单条 Teledb SQL。
+func (v *TeledbOnlineValidator) Validate(sql string) *ValidationResult {
+	return validateOnlineSQL(v.DB, sql)
+}
+
+// ValidateText 验证多条 Teledb SQL。
+func (v *TeledbOnlineValidator) ValidateText(sqlText string) *ValidationResult {
+	return validateOnlineSQLText(v.DB, sqlText)
+}
+
+// NewPostgreSQLOnlineValidator 创建 PostgreSQL 在线验证器。
+func NewPostgreSQLOnlineValidator(dsn string) *PostgreSQLOnlineValidator {
+	return &PostgreSQLOnlineValidator{
+		OnlineValidatorBase: OnlineValidatorBase{
+			DSN: dsn,
+		},
+	}
+}
+
+// Connect 连接到 PostgreSQL 数据库。
+func (v *PostgreSQLOnlineValidator) Connect() error {
+	db, err := sql.Open("postgres", v.DSN)
+	if err != nil {
+		return fmt.Errorf("打开 PostgreSQL 连接失败: %w", err)
+	}
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return fmt.Errorf("PostgreSQL 连接测试失败: %w", err)
+	}
+
+	v.DB = db
+	return nil
+}
+
+// Validate 验证单条 PostgreSQL SQL。
+func (v *PostgreSQLOnlineValidator) Validate(sql string) *ValidationResult {
+	return validateOnlineSQL(v.DB, sql)
+}
+
+// ValidateText 验证多条 PostgreSQL SQL。
+func (v *PostgreSQLOnlineValidator) ValidateText(sqlText string) *ValidationResult {
+	return validateOnlineSQLText(v.DB, sqlText)
+}
+
 // NewGaussDBOnlineValidator 创建 GaussDB 在线验证器
 func NewGaussDBOnlineValidator(dsn string) *GaussDBOnlineValidator {
 	return &GaussDBOnlineValidator{
@@ -229,38 +319,36 @@ func (v *GaussDBOnlineValidator) Connect() error {
 
 // Validate 验证单条 SQL 语句
 func (v *GaussDBOnlineValidator) Validate(sql string) *ValidationResult {
-	result := NewValidationResult(true)
-
-	if v.DB == nil {
-		result.AddError(0, 0, "数据库连接未建立", sql)
-		return result
-	}
-
-	trimmedSQL := strings.TrimSpace(sql)
-	if trimmedSQL == "" {
-		return result
-	}
-
-	// 跳过注释
-	if strings.HasPrefix(trimmedSQL, "--") || strings.HasPrefix(trimmedSQL, "/*") {
-		return result
-	}
-
-	// 在事务中验证
-	err := validateInTransaction(v.DB, trimmedSQL)
-	if err != nil {
-		result.AddError(0, 0, err.Error(), sql)
-	}
-
-	return result
+	return validateOnlineSQL(v.DB, sql)
 }
 
 // ValidateText 验证包含多条语句的 SQL 文本
 // 所有语句在同一个事务中执行，以正确处理语句之间的依赖关系
 func (v *GaussDBOnlineValidator) ValidateText(sqlText string) *ValidationResult {
+	return validateOnlineSQLText(v.DB, sqlText)
+}
+
+func validateOnlineSQL(db *sql.DB, sqlText string) *ValidationResult {
 	result := NewValidationResult(true)
 
-	if v.DB == nil {
+	if db == nil {
+		result.AddError(0, 0, "数据库连接未建立", sqlText)
+		return result
+	}
+	trimmedSQL := strings.TrimSpace(sqlText)
+	if trimmedSQL == "" || strings.HasPrefix(trimmedSQL, "--") || strings.HasPrefix(trimmedSQL, "/*") {
+		return result
+	}
+	if err := validateInTransaction(db, trimmedSQL); err != nil {
+		result.AddError(0, 0, err.Error(), sqlText)
+	}
+	return result
+}
+
+func validateOnlineSQLText(db *sql.DB, sqlText string) *ValidationResult {
+	result := NewValidationResult(true)
+
+	if db == nil {
 		result.AddError(0, 0, "数据库连接未建立", sqlText)
 		return result
 	}
@@ -271,7 +359,7 @@ func (v *GaussDBOnlineValidator) ValidateText(sqlText string) *ValidationResult 
 	}
 
 	// 在单个事务中执行所有语句
-	stmtErrors := validateMultipleInTransaction(v.DB, statements)
+	stmtErrors := validateMultipleInTransaction(db, statements)
 
 	// 将错误转换为 ValidationError
 	for _, stmtErr := range stmtErrors {
