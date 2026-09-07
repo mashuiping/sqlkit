@@ -1,10 +1,10 @@
 // MySQL to PostgreSQL-Compatible SQL Converter & GaussDB/Teledb Tool
 // 功能：
 // 1. MySQL SQL 转换为 PostgreSQL 兼容 SQL（适用于 GaussDB、Teledb）
-// 2. 执行 GaussDB SQL 语句
+// 2. 执行 GaussDB / Teledb SQL 语句
 // 3. 执行 MySQL SQL 语句
 // 4. 静态语法验证（MySQL 和 PostgreSQL-compatible SQL）
-// 5. MySQL 数据迁移到 GaussDB
+// 5. MySQL 数据迁移到 GaussDB / Teledb
 package main
 
 import (
@@ -32,22 +32,25 @@ var (
 	sqlQuery   = flag.String("sql", "", "直接指定要处理的 SQL 语句")
 
 	// 操作模式
-	modeConvert             = flag.Bool("convert", false, "转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB）")
+	modeConvert             = flag.Bool("convert", false, "转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB、Teledb）")
 	modeExecMySQL           = flag.Bool("exec-mysql", false, "在 MySQL 数据库执行 SQL")
 	modeExecGaussDB         = flag.Bool("exec-gaussdb", false, "在 GaussDB 数据库执行 SQL")
+	modeExecTeledb          = flag.Bool("exec-teledb", false, "在 Teledb 数据库执行 SQL（使用 opengauss 驱动）")
 	modeValidMySQL          = flag.Bool("validate-mysql", false, "验证 MySQL SQL 语法（静态检查，无需数据库连接）")
 	modeValidPostgres       = flag.Bool("validate-postgres", false, "验证 PostgreSQL 兼容 SQL 语法（静态检查）")
 	modeValidGaussDB        = flag.Bool("validate-gaussdb", false, "验证 PostgreSQL 兼容 SQL 语法（旧别名）")
+	modeValidTeledb         = flag.Bool("validate-teledb", false, "验证 PostgreSQL 兼容 SQL 语法（适用于 Teledb，等价于 -validate-postgres）")
 	modeValidPostgresOnline = flag.Bool("validate-postgres-online", false, "在线验证 PostgreSQL SQL（使用数据库事务，需要 PostgreSQL 连接）")
 	modeValidGaussDBOnline  = flag.Bool("validate-gaussdb-online", false, "在线验证 GaussDB SQL（使用数据库事务，需要数据库连接）")
 	modeValidTeledbOnline   = flag.Bool("validate-teledb-online", false, "在线验证 Teledb SQL（使用 opengauss 驱动，需要 Teledb 连接）")
-	modeMigrateData         = flag.Bool("migrate-data", false, "将 MySQL 数据迁移到 GaussDB")
+	modeMigrateData         = flag.Bool("migrate-data", false, "将 MySQL 数据迁移到目标数据库（默认 GaussDB，可通过 -migrate-target 选择 teledb）")
 
 	// 数据迁移配置
 	migrateTable     = flag.String("table", "", "要迁移的表名（多个表用逗号分隔）")
 	migrateBatchSize = flag.Int("batch-size", 1000, "批量插入的行数")
 	migrateMaxRows   = flag.Int("max-rows", 0, "最大迁移行数（0 表示不限制）")
 	migrateTruncate  = flag.Bool("truncate", true, "迁移前清空目标表")
+	migrateTarget    = flag.String("migrate-target", "gaussdb", "数据迁移目标数据库：gaussdb 或 teledb（默认 gaussdb）")
 
 	// 转换器配置
 	useTimestampTZ = flag.Bool("timestamptz", true, "使用 TIMESTAMPTZ 而非 TIMESTAMP")
@@ -114,6 +117,13 @@ func main() {
 			os.Exit(1)
 		}
 		execGaussDB(sqlContent)
+	case *modeExecTeledb:
+		sqlContent, err := getSQLContent()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+		execTeledb(sqlContent)
 	case *modeValidMySQL:
 		sqlContent, err := getSQLContent()
 		if err != nil {
@@ -128,6 +138,13 @@ func main() {
 			os.Exit(1)
 		}
 		validateGaussDB(sqlContent)
+	case *modeValidTeledb:
+		sqlContent, err := getSQLContent()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+		validateTeledb(sqlContent)
 	case *modeValidPostgresOnline:
 		sqlContent, err := getSQLContent()
 		if err != nil {
@@ -222,7 +239,7 @@ func convertSQL(mysqlSQL string) {
 			fmt.Println()
 		}
 
-		fmt.Println("PostgreSQL-compatible SQL (适用于 GaussDB):")
+		fmt.Println("PostgreSQL-compatible SQL (适用于 GaussDB、Teledb):")
 		fmt.Println(strings.Repeat("=", 60))
 		fmt.Println(postgresSQL)
 		fmt.Println(strings.Repeat("=", 60))
@@ -367,10 +384,82 @@ func validateMySQL(sql string) {
 	}
 }
 
+// execTeledb 在 Teledb 执行 SQL（使用 opengauss 驱动）。
+func execTeledb(sql string) {
+	dsn := getTeledbDSN()
+	if dsn == "" {
+		fmt.Fprintf(os.Stderr, "错误: 请提供 Teledb 连接信息\n")
+		fmt.Fprintf(os.Stderr, "使用 -teledb-dsn 或 -teledb-host/-teledb-user 等参数\n")
+		fmt.Fprintf(os.Stderr, "或设置环境变量: TELEDB_DSN, TELEDB_HOST, TELEDB_USER 等\n")
+		os.Exit(1)
+	}
+
+	exec := executor.NewTeledbExecutor(dsn)
+	if err := exec.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 连接 Teledb 失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer exec.Close()
+
+	fmt.Println("✓ 成功连接到 Teledb")
+
+	statements := executor.SplitStatements(sql)
+	if len(statements) == 0 {
+		fmt.Fprintf(os.Stderr, "错误: 没有找到有效的 SQL 语句\n")
+		os.Exit(1)
+	}
+
+	successCount := 0
+	failCount := 0
+	for i, stmt := range statements {
+		trimmed := strings.TrimSpace(stmt)
+		if strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+
+		if len(statements) > 1 {
+			fmt.Printf("\n执行语句 %d/%d:\n", i+1, len(statements))
+		}
+
+		result, err := exec.Execute(stmt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ 执行失败: %v\n", err)
+			failCount++
+			continue
+		}
+
+		printExecuteResult(result)
+		successCount++
+	}
+
+	if failCount > 0 {
+		fmt.Fprintf(os.Stderr, "\n执行完成: 成功 %d 条, 失败 %d 条\n", successCount, failCount)
+		os.Exit(1)
+	}
+
+	if len(statements) > 1 {
+		fmt.Printf("\n✓ 所有语句执行成功 (共 %d 条)\n", successCount)
+	}
+}
+
 // validateGaussDB 验证 PostgreSQL 兼容 SQL 语法。
 // -validate-gaussdb 是历史命令名；-validate-postgres 为推荐名称。
 func validateGaussDB(sql string) {
 	v := validator.NewGaussDBValidator()
+	result := v.ValidateText(sql)
+
+	validator.PrintResult(result, "")
+
+	if !result.Valid {
+		os.Exit(1)
+	}
+}
+
+// validateTeledb 验证 PostgreSQL 兼容 SQL 语法（适用于 Teledb）。
+// Teledb 与 GaussDB 同源（基于 openGauss/PostgreSQL 方言），
+// 静态语法检查结果与 -validate-postgres / -validate-gaussdb 等价。
+func validateTeledb(sql string) {
+	v := validator.NewTeledbValidator()
 	result := v.ValidateText(sql)
 
 	validator.PrintResult(result, "")
@@ -459,10 +548,27 @@ func validateTeledbOnline(sql string) {
 
 // ============ 数据迁移功能 ============
 
-// migrateData 执行数据迁移
+// migrateData 执行数据迁移。
+// 目标数据库通过 -migrate-target 选择（gaussdb 或 teledb），默认 gaussdb。
 func migrateData() {
 	if *migrateTable == "" {
 		fmt.Fprintf(os.Stderr, "错误: 必须指定 -table 参数\n")
+		os.Exit(1)
+	}
+
+	// 解析并校验迁移目标。
+	target := strings.ToLower(strings.TrimSpace(*migrateTarget))
+	var targetLabel, targetEnvDoc string
+	switch target {
+	case "", "gaussdb":
+		target = "gaussdb"
+		targetLabel = "GaussDB"
+		targetEnvDoc = "GAUSSDB_DSN, GAUSSDB_HOST, GAUSSDB_USER 等"
+	case "teledb":
+		targetLabel = "Teledb"
+		targetEnvDoc = "TELEDB_DSN, TELEDB_HOST, TELEDB_USER 等"
+	default:
+		fmt.Fprintf(os.Stderr, "错误: 不支持的 -migrate-target=%q，仅支持 gaussdb 或 teledb\n", *migrateTarget)
 		os.Exit(1)
 	}
 
@@ -472,9 +578,15 @@ func migrateData() {
 		os.Exit(1)
 	}
 
-	gaussdbDsnStr := getGaussDBDSN()
-	if gaussdbDsnStr == "" {
-		fmt.Fprintf(os.Stderr, "错误: 请提供 GaussDB 连接信息\n")
+	targetDsnStr, err := getMigrateTargetDSN(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		os.Exit(1)
+	}
+	if targetDsnStr == "" {
+		fmt.Fprintf(os.Stderr, "错误: 请提供 %s 连接信息\n", targetLabel)
+		fmt.Fprintf(os.Stderr, "使用 -%s-dsn 或 -%s-host/-%s-user 等参数\n", target, target, target)
+		fmt.Fprintf(os.Stderr, "或设置环境变量: %s\n", targetEnvDoc)
 		os.Exit(1)
 	}
 
@@ -492,19 +604,19 @@ func migrateData() {
 	}
 	fmt.Println("✓ 成功连接到 MySQL")
 
-	// 连接 GaussDB
-	gaussDB, err := sql.Open("opengauss", gaussdbDsnStr)
+	// 连接目标数据库（GaussDB / Teledb 共用 opengauss 驱动协议）
+	targetDB, err := sql.Open("opengauss", targetDsnStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ 连接 GaussDB 失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ 连接 %s 失败: %v\n", targetLabel, err)
 		os.Exit(1)
 	}
-	defer gaussDB.Close()
+	defer targetDB.Close()
 
-	if err := gaussDB.Ping(); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ GaussDB 连接测试失败: %v\n", err)
+	if err := targetDB.Ping(); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %s 连接测试失败: %v\n", targetLabel, err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ 成功连接到 GaussDB")
+	fmt.Printf("✓ 成功连接到 %s（opengauss 驱动）\n", targetLabel)
 
 	// 解析表名列表
 	tableList := strings.Split(*migrateTable, ",")
@@ -519,7 +631,7 @@ func migrateData() {
 		if table == "" {
 			continue
 		}
-		if err := migrateTableData(mysqlDB, gaussDB, table); err != nil {
+		if err := migrateTableData(mysqlDB, targetDB, table); err != nil {
 			fmt.Fprintf(os.Stderr, "❌ 迁移表 %s 失败: %v\n", table, err)
 			failCount++
 			continue
@@ -529,21 +641,33 @@ func migrateData() {
 	}
 
 	fmt.Println(strings.Repeat("=", 60))
-	fmt.Printf("迁移完成: 成功 %d 个表, 失败 %d 个表\n", successCount, failCount)
+	fmt.Printf("迁移完成: 成功 %d 个表, 失败 %d 个表 (目标: %s)\n", successCount, failCount, targetLabel)
 
 	if failCount > 0 {
 		os.Exit(1)
 	}
 }
 
+// getMigrateTargetDSN 根据目标类型返回 DSN 字符串。
+func getMigrateTargetDSN(target string) (string, error) {
+	switch target {
+	case "gaussdb":
+		return getGaussDBDSN(), nil
+	case "teledb":
+		return getTeledbDSN(), nil
+	default:
+		return "", fmt.Errorf("不支持的迁移目标: %s", target)
+	}
+}
+
 // migrateTableData 迁移单个表的数据
-func migrateTableData(mysqlDB, gaussDB *sql.DB, tableName string) error {
+func migrateTableData(mysqlDB, targetDB *sql.DB, tableName string) error {
 	fmt.Printf("开始迁移表: %s\n", tableName)
 	startTime := time.Now()
 
 	// 清空目标表的数据
 	if *migrateTruncate {
-		if err := truncateTable(gaussDB, tableName); err != nil {
+		if err := truncateTable(targetDB, tableName); err != nil {
 			return fmt.Errorf("清空表失败: %w", err)
 		}
 		fmt.Printf("  表 %s 已清空\n", tableName)
@@ -612,7 +736,7 @@ func migrateTableData(mysqlDB, gaussDB *sql.DB, tableName string) error {
 
 		// 达到批次大小时执行插入
 		if len(batch) >= batchSize {
-			if err := insertBatch(gaussDB, tableName, columnNames, batch); err != nil {
+			if err := insertBatch(targetDB, tableName, columnNames, batch); err != nil {
 				return fmt.Errorf("批量插入失败: %w", err)
 			}
 			fmt.Printf("  表 %s: 已插入 %d 行\n", tableName, totalRows)
@@ -622,7 +746,7 @@ func migrateTableData(mysqlDB, gaussDB *sql.DB, tableName string) error {
 
 	// 插入剩余数据
 	if len(batch) > 0 {
-		if err := insertBatch(gaussDB, tableName, columnNames, batch); err != nil {
+		if err := insertBatch(targetDB, tableName, columnNames, batch); err != nil {
 			return fmt.Errorf("批量插入剩余数据失败: %w", err)
 		}
 	}
@@ -632,7 +756,7 @@ func migrateTableData(mysqlDB, gaussDB *sql.DB, tableName string) error {
 	}
 
 	// 更新自增序列
-	if err := updateSequence(gaussDB, tableName); err != nil {
+	if err := updateSequence(targetDB, tableName); err != nil {
 		fmt.Printf("  警告: 更新表 %s 的序列失败: %v\n", tableName, err)
 	}
 
@@ -963,16 +1087,18 @@ func printUsage() {
   sqlkit [操作模式] [选项]
 
 操作模式:
-  -convert                 转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB）
+  -convert                 转换 MySQL SQL 为 PostgreSQL 兼容 SQL（默认模式，适用于 GaussDB、Teledb）
   -exec-mysql              在 MySQL 数据库执行 SQL
-  -exec-gaussdb            在 GaussDB 数据库执行 SQL  
+  -exec-gaussdb            在 GaussDB 数据库执行 SQL
+  -exec-teledb             在 Teledb 数据库执行 SQL（使用 opengauss 驱动）
   -validate-mysql          验证 MySQL SQL 语法（静态检查，无需数据库连接）
   -validate-postgres       验证 PostgreSQL 兼容 SQL 语法（静态检查，推荐）
   -validate-gaussdb        验证 PostgreSQL 兼容 SQL 语法（旧别名）
+  -validate-teledb         验证 PostgreSQL 兼容 SQL 语法（适用于 Teledb，等价于 -validate-postgres）
   -validate-postgres-online 在线验证 PostgreSQL SQL（使用 PostgreSQL 连接）
   -validate-gaussdb-online 在线验证 GaussDB SQL（使用数据库事务，需要数据库连接）
   -validate-teledb-online   在线验证 Teledb SQL（使用 opengauss 驱动，需要 Teledb 连接）
-  -migrate-data            将 MySQL 数据迁移到 GaussDB
+  -migrate-data            将 MySQL 数据迁移到目标数据库（通过 -migrate-target 选择 gaussdb 或 teledb，默认 gaussdb）
 
 输入/输出选项:
   -f <文件>          输入的 SQL 文件路径
@@ -983,14 +1109,15 @@ func printUsage() {
   -timestamptz       使用 TIMESTAMPTZ 而非 TIMESTAMP（默认: true）
   -jsonb             使用 JSONB 而非 JSON（默认: true）
 
-查询结果显示选项（-exec-mysql 和 -exec-gaussdb 模式）:
+查询结果显示选项（-exec-mysql / -exec-gaussdb / -exec-teledb 模式）:
   -max-column-width <n>  查询结果列的最大显示宽度（默认: 1000）
 
 数据迁移选项（-migrate-data 模式）:
-  -table <表名>      要迁移的表名（必需，多个表用逗号分隔）
-  -batch-size <n>    批量插入的行数（默认: 1000）
-  -max-rows <n>      最大迁移行数（默认: 0 表示不限制）
-  -truncate          迁移前清空目标表（默认: true）
+  -table <表名>         要迁移的表名（必需，多个表用逗号分隔）
+  -batch-size <n>       批量插入的行数（默认: 1000）
+  -max-rows <n>         最大迁移行数（默认: 0 表示不限制）
+  -truncate             迁移前清空目标表（默认: true）
+  -migrate-target <db>  目标数据库：gaussdb（默认）或 teledb
 
 MySQL 数据库连接:
   方式一: 使用 DSN（推荐，指定后无需其他连接参数）
@@ -1041,7 +1168,7 @@ PostgreSQL 数据库连接（仅用于 -validate-postgres-online）:
     POSTGRES_DSN, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD,
     POSTGRES_DBNAME, POSTGRES_SSLMODE
 
-Teledb 数据库连接（仅用于 -validate-teledb-online）:
+Teledb 数据库连接（用于 -validate-teledb-online / -exec-teledb / -migrate-data -migrate-target=teledb）:
   Teledb 使用 opengauss 驱动，配置与 GaussDB 独立。
   方式一: 使用 DSN（推荐，指定后无需其他连接参数）
     -teledb-dsn <dsn>    完整的 DSN 连接字符串
@@ -1072,7 +1199,7 @@ Teledb 数据库连接（仅用于 -validate-teledb-online）:
   # 验证 MySQL 语法
   sqlkit -validate-mysql -f input.sql
 
-  # 验证 PostgreSQL 兼容 SQL 语法（适用于 GaussDB）
+  # 验证 PostgreSQL 兼容 SQL 语法（适用于 GaussDB、Teledb）
   sqlkit -validate-postgres -f converted.sql
 
   # 在线验证 GaussDB SQL（使用数据库事务）
@@ -1101,10 +1228,23 @@ Teledb 数据库连接（仅用于 -validate-teledb-online）:
          -gaussdb-password mypass -gaussdb-dbname mydb \
          -sql "SELECT * FROM users"
 
-  # 使用 DSN 迁移数据
+  # 使用 DSN 执行 Teledb SQL（opengauss 驱动）
+  sqlkit -exec-teledb \
+         -teledb-dsn "host=192.168.1.100 user=teledb password=xxx dbname=mydb sslmode=disable" \
+         -sql "SELECT * FROM users"
+
+  # 验证 Teledb 兼容 SQL 语法（静态）
+  sqlkit -validate-teledb -f converted.sql
+
+  # 使用 DSN 迁移数据到 GaussDB（默认）
   sqlkit -migrate-data -table "users,orders,products" \
          -mysql-dsn "root:pass@tcp(localhost:3306)/mydb?parseTime=True" \
          -gaussdb-dsn "host=localhost port=5432 user=admin password=xxx dbname=mydb"
+
+  # 使用 DSN 迁移数据到 Teledb
+  sqlkit -migrate-data -migrate-target teledb -table "users,orders,products" \
+         -mysql-dsn "root:pass@tcp(localhost:3306)/mydb?parseTime=True" \
+         -teledb-dsn "host=localhost port=5432 user=teledb password=xxx dbname=mydb sslmode=disable"
 
   # 使用分离参数迁移数据
   sqlkit -migrate-data -table users \

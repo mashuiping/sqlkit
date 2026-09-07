@@ -15,6 +15,10 @@ coverage.html
 # 依赖目录
 vendor/
 
+# 本地 Go 构建/模块缓存（无网/沙箱环境下使用，不入仓）
+.gocache/
+.gomodcache/
+
 # IDE 和编辑器
 .idea/
 .vscode/

@@ -7,7 +7,7 @@
 <span style="display: inline-block; margin: 0 4px; padding: 2px 8px; background: #00ADD8; color: white; border-radius: 3px; font-size: 12px; font-weight: bold;">Go 1.21+</span>
 <span style="display: inline-block; margin: 0 4px; padding: 2px 8px; background: #28a745; color: white; border-radius: 3px; font-size: 12px; font-weight: bold;">MIT License</span>
 
-一个命令行工具，用于将 MySQL SQL 转换为 PostgreSQL-compatible SQL（适用于 GaussDB、Teledb），并提供静态语法验证、目标数据库在线验证、GaussDB 执行和数据迁移功能。
+一个命令行工具，用于将 MySQL SQL 转换为 PostgreSQL-compatible SQL（适用于 GaussDB、Teledb），并提供静态语法验证、目标数据库在线验证、SQL 执行和数据迁移功能。
 
 </div>
 
@@ -19,8 +19,8 @@
 - ✅ **静态语法验证** - 支持 MySQL 与 PostgreSQL-compatible SQL
 - 🌐 **GaussDB 在线验证** - 使用数据库事务进行真实 SQL 验证
 - 🌐 **Teledb 在线验证** - 使用 `opengauss` 驱动进行 PG 模式真实 SQL 验证
-- 🚀 **数据库执行** - 支持 MySQL 与 GaussDB
-- 📦 **数据迁移** - 批量将 MySQL 数据迁移到 GaussDB
+- 🚀 **数据库执行** - 支持 MySQL、GaussDB 与 Teledb
+- 📦 **数据迁移** - 批量将 MySQL 数据迁移到 GaussDB 或 Teledb
 - 🎯 **智能转换** - 自动处理数据类型、索引、注释等转换
 - 🔧 **灵活配置** - 支持命令行参数和环境变量配置
 
@@ -56,7 +56,7 @@ sqlkit -sql "SELECT * FROM users LIMIT 10, 20"
 # 验证 MySQL 语法（无需数据库连接）
 sqlkit -validate-mysql -f input.sql
 
-# 验证 PostgreSQL-compatible SQL（静态检查，适用于 GaussDB）
+# 验证 PostgreSQL-compatible SQL（静态检查，适用于 GaussDB、Teledb）
 sqlkit -validate-postgres -f converted.sql
 
 # 在线验证 GaussDB SQL（使用数据库事务）
@@ -87,20 +87,30 @@ sqlkit -exec-mysql \
 sqlkit -exec-gaussdb \
        -gaussdb-dsn "host=localhost port=5432 user=admin password=xxx dbname=mydb" \
        -sql "SELECT * FROM users"
+
+# 在 Teledb 中执行 SQL（使用 opengauss 驱动）
+sqlkit -exec-teledb \
+       -teledb-dsn "host=localhost port=5432 user=teledb password=xxx dbname=mydb sslmode=disable" \
+       -sql "SELECT * FROM users"
 ```
 
 ### 数据迁移
 
 ```bash
-# 迁移单个表
+# 迁移单个表到 GaussDB（默认目标）
 sqlkit -migrate-data -table users \
        -mysql-dsn "root:pass@tcp(localhost:3306)/mydb" \
        -gaussdb-dsn "host=localhost port=5432 user=admin password=xxx dbname=mydb"
 
-# 迁移多个表
+# 迁移多个表到 GaussDB
 sqlkit -migrate-data -table "users,orders,products" \
        -mysql-dsn "root:pass@tcp(localhost:3306)/mydb" \
        -gaussdb-dsn "host=localhost port=5432 user=admin password=xxx dbname=mydb"
+
+# 迁移多个表到 Teledb（通过 -migrate-target 选择）
+sqlkit -migrate-data -migrate-target teledb -table "users,orders,products" \
+       -mysql-dsn "root:pass@tcp(localhost:3306)/mydb" \
+       -teledb-dsn "host=localhost port=5432 user=teledb password=xxx dbname=mydb sslmode=disable"
 ```
 
 ## 📦 安装
@@ -167,16 +177,18 @@ SQLKit 支持以下操作模式：
 
 | 模式 | 参数 | 说明 |
 |------|------|------|
-| SQL 转换 | `-convert` | 将 MySQL SQL 转换为 PostgreSQL-compatible SQL（默认模式，适用于 GaussDB） |
+| SQL 转换 | `-convert` | 将 MySQL SQL 转换为 PostgreSQL-compatible SQL（默认模式，适用于 GaussDB、Teledb） |
 | MySQL 执行 | `-exec-mysql` | 在 MySQL 数据库中执行 SQL |
 | GaussDB 执行 | `-exec-gaussdb` | 在 GaussDB 数据库中执行 SQL |
+| Teledb 执行 | `-exec-teledb` | 在 Teledb 数据库中执行 SQL（使用 opengauss 驱动） |
 | MySQL 验证 | `-validate-mysql` | 静态验证 MySQL SQL 语法 |
 | PostgreSQL-compatible 验证 | `-validate-postgres` | 静态验证 PostgreSQL-compatible SQL（推荐） |
 | GaussDB 验证（旧别名） | `-validate-gaussdb` | 等同于 `-validate-postgres` |
+| Teledb 验证 | `-validate-teledb` | 静态验证 Teledb 兼容 SQL（等价于 `-validate-postgres`） |
 | PostgreSQL 在线验证 | `-validate-postgres-online` | 使用 PostgreSQL 驱动和事务在线验证 |
 | GaussDB 在线验证 | `-validate-gaussdb-online` | 使用 GaussDB 驱动和事务在线验证 |
 | Teledb 在线验证 | `-validate-teledb-online` | 使用 `opengauss` 驱动和 Teledb 连接在线验证 |
-| 数据迁移 | `-migrate-data` | 将 MySQL 数据迁移到 GaussDB |
+| 数据迁移 | `-migrate-data` | 将 MySQL 数据迁移到 GaussDB（默认）或 Teledb（`-migrate-target teledb`） |
 
 ### 输入/输出选项
 
@@ -206,12 +218,12 @@ SQLKit 支持以下操作模式：
 
 ### PostgreSQL-compatible SQL 的支持范围
 
-转换与静态验证使用 PostgreSQL 方言，因此输出为 PostgreSQL-compatible SQL；GaussDB 是该输出的支持目标之一。
+转换与静态验证使用 PostgreSQL 方言，因此输出为 PostgreSQL-compatible SQL；GaussDB、Teledb 都是该输出的支持目标。
 
-- 可使用 `-validate-postgres` 检查转换结果；`-validate-gaussdb` 保留为兼容别名。
+- 可使用 `-validate-postgres` 检查转换结果；`-validate-gaussdb` 保留为兼容别名；`-validate-teledb` 与 `-validate-postgres` 静态行为等价。
 - 静态验证不连接数据库；`-validate-postgres-online`、`-validate-gaussdb-online` 与 `-validate-teledb-online` 分别使用 PostgreSQL、GaussDB 和 Teledb 的独立连接配置。
 - GaussDB 与 Teledb 都使用 `opengauss` 驱动连接，但必须分别配置目标数据库；Teledb 同样使用 PostgreSQL-compatible/PG 模式。`-validate-postgres-online` 使用 `postgres` 驱动，不能替代 Teledb 校验。
-- `-exec-gaussdb` 与 `-migrate-data` 目前只支持 GaussDB 连接，不代表已支持原生 PostgreSQL 数据库执行或迁移。
+- `-exec-gaussdb` 与 `-exec-teledb` 分别在 GaussDB 与 Teledb 上执行 SQL；`-migrate-data` 默认目标为 GaussDB，通过 `-migrate-target teledb` 切换到 Teledb。
 - 若 SQL 使用 GaussDB 专属语法（例如特有存储过程或分布式表能力），应使用 GaussDB 在线验证确认兼容性。
 
 ### MySQL 数据库连接
@@ -288,9 +300,9 @@ sqlkit -validate-postgres-online \
 
 也可以使用 `POSTGRES_DSN`，或分别设置 `POSTGRES_HOST`、`POSTGRES_PORT`、`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DBNAME` 和 `POSTGRES_SSLMODE`。
 
-### Teledb 数据库连接（仅用于在线验证）
+### Teledb 数据库连接
 
-Teledb 使用 `opengauss` 驱动和 PostgreSQL-compatible/PG 模式，但连接配置与 GaussDB 独立：
+Teledb 使用 `opengauss` 驱动和 PostgreSQL-compatible/PG 模式，但连接配置与 GaussDB 独立；用于 `-validate-teledb`、`-validate-teledb-online`、`-exec-teledb` 与 `-migrate-data -migrate-target=teledb`：
 
 ```bash
 sqlkit -validate-teledb-online \
@@ -362,7 +374,7 @@ CREATE TABLE users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 ```
 
-**输出（PostgreSQL-compatible SQL，适用于 GaussDB）：**
+**输出（PostgreSQL-compatible SQL，适用于 GaussDB、Teledb）：**
 
 ```sql
 CREATE TABLE users (
@@ -389,7 +401,7 @@ ORDER BY created_at DESC
 LIMIT 10, 20;
 ```
 
-**输出（PostgreSQL-compatible SQL，适用于 GaussDB）：**
+**输出（PostgreSQL-compatible SQL，适用于 GaussDB、Teledb）：**
 
 ```sql
 SELECT * FROM users 
@@ -454,7 +466,7 @@ make help
 
 ## 🙏 致谢
 
-- [openGauss Connector](https://gitee.com/opengauss/openGauss-connector-go-pq) - GaussDB Go 驱动
+- [openGauss Connector](https://gitee.com/opengauss/openGauss-connector-go-pq) - GaussDB / Teledb Go 驱动
 - [MySQL Driver](https://github.com/go-sql-driver/mysql) - MySQL Go 驱动
 - [lib/pq](https://github.com/lib/pq) - PostgreSQL Go 驱动
 - [PostgreSQL Parser](https://github.com/auxten/postgresql-parser) - PostgreSQL SQL 解析器
